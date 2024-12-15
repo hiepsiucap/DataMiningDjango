@@ -13,6 +13,15 @@ from mlxtend.frequent_patterns import apriori, association_rules
 from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier, plot_tree
 from matplotlib import pyplot as plt
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
+import pandas as pd
+from sklearn.naive_bayes import CategoricalNB
+from sklearn.preprocessing import LabelEncoder
+import os
 import cloudinary.uploader
 from django.http import JsonResponse
 from django.core.files.storage import default_storage
@@ -224,16 +233,6 @@ class KMeansClusteringView(APIView):
         
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.core.files.storage import default_storage
-from django.core.files.base import ContentFile
-import pandas as pd
-from sklearn.naive_bayes import CategoricalNB
-from sklearn.preprocessing import LabelEncoder
-import os
-
 class NaiveBayesClassificationView(APIView):
     def post(self, request):
         try:
