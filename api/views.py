@@ -13,12 +13,7 @@ from mlxtend.frequent_patterns import apriori, association_rules
 from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier, plot_tree
 from matplotlib import pyplot as plt
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
 from django.core.files.storage import default_storage
-from django.core.files.base import ContentFile
-import pandas as pd
 from sklearn.naive_bayes import CategoricalNB
 from sklearn.preprocessing import LabelEncoder
 import os
@@ -28,55 +23,53 @@ from django.core.files.storage import default_storage
 from django.views import View
 import os
 import uuid
+from rest_framework import serializers
+
+
 class CorrelationAPIView(APIView):
     def post(self, request):
+        # Áp dụng serializer cho dữ liệu đầu vào
         serializer = ArrayInputSerializer(data=request.data)
         if serializer.is_valid():
-            input_data = serializer.validated_data['input']
-
-            # Cố định dữ liệu `chieucao` và `cannang`
-            chieucao = input_data
-            cannang = [65, 67, 71, 71, 66, 75, 67, 70, 71, 69, 69]  # Đầu vào mẫu cho cân nặng
-
-            # Tính toán theo yêu cầu
-            o2x = 0
-            o2y = 0
-            b1 = 0
-
-            tempA = 0
-            tempB = 0
-
+            chieucao = serializer.validated_data['chieucao']
+            cannang = serializer.validated_data['cannang']
+            
+            # Kiểm tra xem độ dài 2 mảng có khớp nhau không
+            if len(chieucao) != len(cannang):
+                return Response(
+                    {"error": "chieucao và cannang phải có cùng độ dài."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Tính phương sai o2x và o2y
+            tempA = tempB = 0
             for i in chieucao:
                 tempA += i
                 tempB += i * i
-
             o2x = tempB / len(chieucao) - (tempA / len(chieucao)) ** 2
 
-            tempA = 0
-            tempB = 0
-
+            tempA = tempB = 0
             for j in cannang:
                 tempA += j
                 tempB += j * j
-
             o2y = tempB / len(cannang) - (tempA / len(cannang)) ** 2
 
-            tempA = 0
-            tempB = 0
-            tempC = 0
+            # Tính covariance và b1
+            tempA = tempB = tempC = 0
             for i in range(0, len(chieucao)):
                 tempA += chieucao[i]
                 tempB += cannang[i]
                 tempC += chieucao[i] * cannang[i]
 
-            tempA = tempA / len(chieucao)
-            tempB = tempB / len(cannang)
-            tempC = tempC / len(cannang)
+            tempA /= len(chieucao)
+            tempB /= len(cannang)
+            tempC /= len(chieucao)
 
             b1 = (tempC - tempA * tempB) / o2x
             r = b1 * (math.sqrt(o2x)) / math.sqrt(o2y)
             rounded_r = round(r, 2)
 
+            # Trả về kết quả
             return Response(
                 {"correlation": rounded_r},
                 status=status.HTTP_200_OK
@@ -233,55 +226,40 @@ class KMeansClusteringView(APIView):
         
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-class NaiveBayesClassificationView(APIView):
+import joblib
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Load model và encoders
+MODEL_PATH = os.path.join(BASE_DIR, 'model.pkl')
+ENCODER_PATH= os.path.join(BASE_DIR, 'label_encoders.pkl')
+
+class PredictView(APIView):
     def post(self, request):
         try:
-            # Kiểm tra file có được upload hay không
-            if 'file' not in request.FILES:
-                return Response({'error': 'No file uploaded'}, status=status.HTTP_400_BAD_REQUEST)
+            # Tải mô hình và label encoders
+            model = joblib.load(MODEL_PATH)
+            label_encoders = joblib.load(ENCODER_PATH)
 
-            # Lưu file đã upload
-            file = request.FILES['file']
-            file_path = default_storage.save('uploaded_files/' + file.name, ContentFile(file.read()))
-            full_path = os.path.join(default_storage.location, file_path)
+            # Lấy dữ liệu từ request
+            input_data = request.data
+            sample = pd.DataFrame([{
+                'Outlook': input_data['Outlook'],
+                'Temperature': input_data['Temperature'],
+                'Humidity': input_data['Humidity'],
+                'Wind': input_data['Wind']
+            }])
 
-            # Đọc file Excel
-            data = pd.ExcelFile(full_path)
-            df = data.parse('Sheet1')
+            # Encode dữ liệu đầu vào
+            for column in sample.columns:
+                if column in label_encoders:
+                    sample[column] = label_encoders[column].transform(sample[column])
+                else:
+                    return Response({'error': f'Invalid column: {column}'}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Kiểm tra dữ liệu có đúng định dạng không
-            required_columns = ['Outlook', 'Temperature', 'Humidity', 'Wind', 'Play ball']
-            for column in required_columns:
-                if column not in df.columns:
-                    return Response({'error': f'Missing required column: {column}'}, status=status.HTTP_400_BAD_REQUEST)
+            # Dự đoán
+            prediction = model.predict(sample)
+            predicted_label = label_encoders['Play ball'].inverse_transform(prediction)[0]
 
-            # Encode dữ liệu
-            label_encoders = {}
-            encoded_df = df.copy()
-            for column in df.columns:
-                le = LabelEncoder()
-                encoded_df[column] = le.fit_transform(df[column])
-                label_encoders[column] = le
-
-            # Chuẩn bị dữ liệu cho mô hình
-            X = encoded_df[['Outlook', 'Temperature', 'Humidity', 'Wind']]
-            y = encoded_df['Play ball']
-
-            # Huấn luyện mô hình Naive Bayes
-            model = CategoricalNB()
-            model.fit(X, y)
-
-            # Trả về thông tin đã xử lý
-            unique_values = {col: df[col].unique().tolist() for col in df.columns}
-
-            # Xóa file tạm
-            default_storage.delete(file_path)
-
-            return Response({
-                'message': 'Model trained successfully',
-                'columns': df.columns.tolist(),
-                'unique_values': unique_values,
-            }, status=status.HTTP_200_OK)
-
+            return Response({'prediction': predicted_label}, status=status.HTTP_200_OK)
+        
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)        
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
