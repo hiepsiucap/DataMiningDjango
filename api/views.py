@@ -5,6 +5,7 @@ from django.core.files.base import ContentFile
 from sklearn.cluster import KMeans
 from rest_framework.views import APIView
 from rest_framework.response import Response
+import numpy as np
 from rest_framework import status
 from .serializers import ArrayInputSerializer
 from rest_framework.parsers import MultiPartParser,FormParser
@@ -263,3 +264,110 @@ class PredictView(APIView):
         
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+class DataProcessingAPIView(APIView):
+    parser_classes = [MultiPartParser]  # Handles file uploads
+
+    def post(self, request):
+        try:
+            # Receive file
+            file = request.FILES['file']
+            df = pd.read_excel(file)
+
+            # Receive parameters
+            decision_attribute = request.data.get('decision_attribute')  # Decision attribute
+            X_indices = set(map(int, request.data.get('X', '0,2,3').split(',')))  # X indices
+            condition_attributes = [attr for attr in request.data.get('condition_attributes', '').split(',') if attr]
+
+            # Validate inputs
+            if decision_attribute not in df.columns:
+                raise ValueError(f"Decision attribute '{decision_attribute}' not found in dataset.")
+            for attr in condition_attributes:
+                if attr and attr not in df.columns:
+                    raise ValueError(f"Condition attribute '{attr}' not found in dataset.")
+            if not all(0 <= idx < len(df) for idx in X_indices):
+                raise ValueError("Some indices in 'X' are out of range.")
+
+            # Equivalence classes
+            equivalence = self.compute_equivalence_classes(df, condition_attributes)
+
+            # Approximation calculations
+            universe = set(df.index)
+            lower_approx, upper_approx = self.compute_approximations(universe, X_indices, equivalence)
+            boundary_region = upper_approx - lower_approx
+            outside_region = universe - upper_approx
+
+            # Dependency calculation
+            dependency = self.calculate_dependency(df, decision_attribute, condition_attributes)
+
+            # Reduct computation
+            reduct_attributes = self.compute_reduct(df, decision_attribute)
+
+            # Result
+            result = {
+                'equivalence_classes': {str(k): v for k, v in equivalence.items()},  # Convert keys to strings
+                'lower_approximation': list(lower_approx),
+                'upper_approximation': list(upper_approx),
+                'boundary_region': list(boundary_region),
+                'outside_region': list(outside_region),
+                'dependency_degree': dependency,
+                'reduct_attributes': reduct_attributes,
+            }
+
+            return Response(result, status=200)
+
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+
+    def compute_equivalence_classes(self, data, attributes):
+        equivalence = {}
+        for index, row in data.iterrows():
+            key = tuple(row[attributes])
+            str_key = str(key)  # Convert tuple to string
+            equivalence.setdefault(str_key, []).append(index)  # Use string as key
+        return equivalence
+
+    def compute_approximations(self, universe, target_class, equivalence):
+        lower_approx, upper_approx = set(), set()
+        for eq_class in equivalence.values():
+            eq_set = set(eq_class)
+            if eq_set.issubset(target_class):
+                lower_approx.update(eq_set)
+            if eq_set & target_class:
+                upper_approx.update(eq_set)
+        return lower_approx, upper_approx
+
+    def calculate_dependency(self, data, decision_attribute, condition_attributes):
+        total_rows = len(data)
+        equivalence_classes = self.compute_equivalence_classes(data, condition_attributes)
+        dependent_rows = 0
+
+        for eq_class in equivalence_classes.values():
+            decision_values = data.loc[eq_class, decision_attribute].unique()
+            if len(decision_values) == 1:
+                dependent_rows += len(eq_class)
+
+        return dependent_rows / total_rows
+
+    def compute_reduct(self, data, decision_attribute):
+        all_attributes = [col for col in data.columns if col != decision_attribute]
+        full_diff_matrix = self.compute_difference_matrix(data, all_attributes)
+
+        reduct = set(all_attributes)
+        for attr in all_attributes:
+            remaining_attrs = [a for a in all_attributes if a != attr]
+            reduced_matrix = self.compute_difference_matrix(data, remaining_attrs)
+
+            if np.array_equal(full_diff_matrix, reduced_matrix):
+                reduct.remove(attr)
+
+        return list(reduct)
+
+    def compute_difference_matrix(self, data, attributes):
+        equivalence = self.compute_equivalence_classes(data, attributes)
+        n = len(data)
+        diff_matrix = np.zeros((n, n), dtype=int)
+
+        for i in range(n):
+            for j in range(n):
+                diff_matrix[i][j] = not data.iloc[i][attributes].equals(data.iloc[j][attributes])
+        return diff_matrix
